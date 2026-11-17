@@ -26,7 +26,7 @@
 <body>
 <main>
   <h1>CATTOPIA</h1>
-  <div class="sub">Big Fat Print Button™ — v0.2</div>
+  <div class="sub">Big Fat Print Button™ — v0.3</div>
 
   <label for="stone">Stone</label>
   <input id="stone" value="Dalmatian Jasper" autocomplete="off">
@@ -50,7 +50,7 @@
 
 <script>
 const SERVICE = 0xff00, WRITE = 0xff02;
-let device=null, writeChar=null;
+let device=null, writeChar=null, notifyChar=null;
 
 const $ = id => document.getElementById(id);
 const status = (msg, good=false) => {
@@ -71,17 +71,45 @@ $("connect").onclick = async () => {
       optionalServices:[0xff00,0xffe0,0xae30]
     });
     device.addEventListener("gattserverdisconnected",()=>{
-      writeChar=null; $("print").disabled=true; status("Printer disconnected.");
+      writeChar=null; notifyChar=null; $("print").disabled=true; status("Printer disconnected.");
     });
+    // Phomymo gives the BLE stack a moment after GATT connection before
+    // discovering the service/characteristics. Copy that behavior.
     const server = await device.gatt.connect();
+    await delay(100);
+
     let service;
-    for (const uuid of [0xff00,0xffe0,0xae30]) {
+    for (const uuid of [0xff00,0xffe0,0xae30,
+                        "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+                        "0000ff00-0000-1000-8000-00805f9b34fb"]) {
       try { service=await server.getPrimaryService(uuid); break; } catch(e){}
     }
     if(!service) throw new Error("Could not find the printer Bluetooth service.");
-    writeChar = await service.getCharacteristic(WRITE);
+
+    writeChar = await service.getCharacteristic(0xff02);
+
+    // Phomymo starts notifications on FF03 when available.
+    try {
+      notifyChar = await service.getCharacteristic(0xff03);
+      await notifyChar.startNotifications();
+    } catch(e) {
+      notifyChar = null;
+    }
+
+    // Phomymo also queries the printer shortly after connecting. Besides giving
+    // us a real round-trip test, this wakes/initializes the same BLE path before print.
+    await delay(500);
+    for (const q of [
+      [0x1f,0x11,0x08], // battery
+      [0x1f,0x11,0x11], // paper
+      [0x1f,0x11,0x07], // firmware
+      [0x1f,0x11,0x09]  // serial
+    ]) {
+      try { await send(q); await delay(100); } catch(e) {}
+    }
+
     $("print").disabled=false;
-    status("Connected to "+(device.name||"M260")+". Ready to BZZZT.",true);
+    status("Connected to "+(device.name||"M260")+". Ready to BZZZT — Take 3.",true);
   } catch(e) {
     status("Connection failed: "+e.message);
   }
@@ -125,20 +153,25 @@ function canvasToRaster(canvas){
   const ctx=canvas.getContext("2d");
   const img=ctx.getImageData(0,0,canvas.width,canvas.height).data;
 
-  // Send the actual 57 mm label raster: 456 dots = 57 bytes per row.
-  // Phomymo sends the label's raster width in the GS v 0 header; it does not
-  // pad every row to the M260's full 72-byte print-head width.
-  const widthBytes=Math.ceil(canvas.width/8), height=canvas.height;
+  // Exact Phomymo M260 behavior:
+  // M260 print head = 576 dots = 72 bytes. The 456-dot (57mm) label is
+  // centered inside that full printer width before sending.
+  const widthBytes=72, printerWidth=576, height=canvas.height;
+  const canvasBytesPerRow=Math.ceil(canvas.width/8);
+  const offset=Math.floor((widthBytes-canvasBytesPerRow)/2);
   const data=new Uint8Array(widthBytes*height);
 
   for(let y=0;y<height;y++){
-    for(let x=0;x<canvas.width;x++){
-      const p=(y*canvas.width+x)*4;
-      const lum=0.299*img[p]+0.587*img[p+1]+0.114*img[p+2];
-      if(lum<128){
-        const bi=y*widthBytes+(x>>3);
-        data[bi] |= 1 << (7-(x&7));
+    for(let byteX=0;byteX<canvasBytesPerRow;byteX++){
+      let byte=0;
+      for(let bit=0;bit<8;bit++){
+        const x=byteX*8+bit;
+        if(x>=canvas.width) continue;
+        const p=(y*canvas.width+x)*4;
+        const lum=0.299*img[p]+0.587*img[p+1]+0.114*img[p+2];
+        if(lum<128) byte |= (1 << (7-bit));
       }
+      data[y*widthBytes+offset+byteX]=byte;
     }
   }
   return {data,widthBytes,heightLines:height};
@@ -180,7 +213,7 @@ $("print").onclick = async () => {
     status("Printing…");
     const raster=canvasToRaster(renderLabel());
     await printM260(raster);
-    status("Print data sent. Did the little bastard BZZZT?",true);
+    status("Take 3 data sent. NOW did the little bastard BZZZT?",true);
   }catch(e){
     status("Print failed: "+e.message);
   }finally{
