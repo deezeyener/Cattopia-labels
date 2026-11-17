@@ -26,7 +26,7 @@
 <body>
 <main>
   <h1>CATTOPIA</h1>
-  <div class="sub">Big Fat Print Button™ — v0.1</div>
+  <div class="sub">Big Fat Print Button™ — v0.2</div>
 
   <label for="stone">Stone</label>
   <input id="stone" value="Dalmatian Jasper" autocomplete="off">
@@ -125,9 +125,10 @@ function canvasToRaster(canvas){
   const ctx=canvas.getContext("2d");
   const img=ctx.getImageData(0,0,canvas.width,canvas.height).data;
 
-  // M260 raster width is 576 dots (72 bytes). Center 456-dot label in that width.
-  const printerWidth=576, widthBytes=72, height=canvas.height;
-  const left=Math.floor((printerWidth-canvas.width)/2);
+  // Send the actual 57 mm label raster: 456 dots = 57 bytes per row.
+  // Phomymo sends the label's raster width in the GS v 0 header; it does not
+  // pad every row to the M260's full 72-byte print-head width.
+  const widthBytes=Math.ceil(canvas.width/8), height=canvas.height;
   const data=new Uint8Array(widthBytes*height);
 
   for(let y=0;y<height;y++){
@@ -135,9 +136,8 @@ function canvasToRaster(canvas){
       const p=(y*canvas.width+x)*4;
       const lum=0.299*img[p]+0.587*img[p+1]+0.114*img[p+2];
       if(lum<128){
-        const px=x+left;
-        const bi=y*widthBytes+(px>>3);
-        data[bi] |= 1 << (7-(px&7));
+        const bi=y*widthBytes+(x>>3);
+        data[bi] |= 1 << (7-(x&7));
       }
     }
   }
@@ -180,7 +180,7 @@ $("print").onclick = async () => {
     status("Printing…");
     const raster=canvasToRaster(renderLabel());
     await printM260(raster);
-    status("BZZZT! Printed. Fields left exactly as they were.",true);
+    status("Print data sent. Did the little bastard BZZZT?",true);
   }catch(e){
     status("Print failed: "+e.message);
   }finally{
