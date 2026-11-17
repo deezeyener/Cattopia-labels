@@ -26,7 +26,7 @@
 <body>
 <main>
   <h1>CATTOPIA</h1>
-  <div class="sub">Big Fat Print Button™ — v0.3</div>
+  <div class="sub">Big Fat Print Button™ — v0.4</div>
 
   <label for="stone">Stone</label>
   <input id="stone" value="Dalmatian Jasper" autocomplete="off">
@@ -34,11 +34,11 @@
   <div class="row">
     <div>
       <label for="size">Size</label>
-      <input id="size" value="8mm" autocomplete="off">
+      <input id="size" value="8" inputmode="decimal" autocomplete="off">
     </div>
     <div>
       <label for="price">Price</label>
-      <input id="price" value="$5" autocomplete="off">
+      <input id="price" value="5" inputmode="decimal" autocomplete="off">
     </div>
   </div>
 
@@ -213,7 +213,7 @@ $("print").onclick = async () => {
     status("Printing…");
     const raster=canvasToRaster(renderLabel());
     await printM260(raster);
-    status("Take 3 data sent. NOW did the little bastard BZZZT?",true);
+    status("BZZZT! Label sent.",true);
   }catch(e){
     status("Print failed: "+e.message);
   }finally{
