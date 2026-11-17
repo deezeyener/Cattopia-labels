@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Cattopia Labels</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#111;color:#fff;font-family:Arial,sans-serif}
+  main{max-width:720px;margin:auto;padding:24px}
+  h1{text-align:center;font-size:38px;margin:8px 0 4px}
+  .sub{text-align:center;color:#aaa;margin-bottom:22px}
+  label{display:block;font-size:20px;font-weight:700;margin:16px 0 7px}
+  input{width:100%;font-size:28px;padding:15px;border:4px solid #555;border-radius:12px;background:#fff;color:#000}
+  input:focus{outline:none;border-color:#fff;box-shadow:0 0 0 5px #555}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  button{width:100%;border:0;border-radius:14px;font-weight:900;cursor:pointer}
+  #connect{font-size:22px;padding:15px;margin:22px 0 12px;background:#ddd;color:#111}
+  #print{font-size:42px;padding:27px 12px;background:#fff;color:#000}
+  #print:disabled{opacity:.35}
+  #status{text-align:center;min-height:28px;margin:14px 0;font-size:18px}
+  .ok{color:#9f9}.bad{color:#faa}
+  canvas{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>CATTOPIA</h1>
+  <div class="sub">Big Fat Print Button™ — v0.1</div>
+
+  <label for="stone">Stone</label>
+  <input id="stone" value="Dalmatian Jasper" autocomplete="off">
+
+  <div class="row">
+    <div>
+      <label for="size">Size</label>
+      <input id="size" value="8mm" autocomplete="off">
+    </div>
+    <div>
+      <label for="price">Price</label>
+      <input id="price" value="$5" autocomplete="off">
+    </div>
+  </div>
+
+  <button id="connect">CONNECT PRINTER</button>
+  <button id="print" disabled>PRINT</button>
+  <div id="status">Printer not connected.</div>
+  <canvas id="label" width="456" height="256"></canvas>
+</main>
+
+<script>
+const SERVICE = 0xff00, WRITE = 0xff02;
+let device=null, writeChar=null;
+
+const $ = id => document.getElementById(id);
+const status = (msg, good=false) => {
+  $("status").textContent=msg;
+  $("status").className=good?"ok":"bad";
+};
+
+for (const id of ["stone","size","price"]) {
+  $(id).addEventListener("focus", e => e.target.select());
+}
+
+$("connect").onclick = async () => {
+  try {
+    if (!navigator.bluetooth) throw new Error("Web Bluetooth is not available here.");
+    status("Choose the M260 with the signal-strength icon…");
+    device = await navigator.bluetooth.requestDevice({
+      filters:[{namePrefix:"M260"},{namePrefix:"M"}],
+      optionalServices:[0xff00,0xffe0,0xae30]
+    });
+    device.addEventListener("gattserverdisconnected",()=>{
+      writeChar=null; $("print").disabled=true; status("Printer disconnected.");
+    });
+    const server = await device.gatt.connect();
+    let service;
+    for (const uuid of [0xff00,0xffe0,0xae30]) {
+      try { service=await server.getPrimaryService(uuid); break; } catch(e){}
+    }
+    if(!service) throw new Error("Could not find the printer Bluetooth service.");
+    writeChar = await service.getCharacteristic(WRITE);
+    $("print").disabled=false;
+    status("Connected to "+(device.name||"M260")+". Ready to BZZZT.",true);
+  } catch(e) {
+    status("Connection failed: "+e.message);
+  }
+};
+
+function cleanSize(v){
+  v=v.trim();
+  if(!v) return "";
+  return /mm$/i.test(v) ? v : v+"mm";
+}
+function cleanPrice(v){
+  v=v.trim();
+  if(!v) return "";
+  return v.startsWith("$") ? v : "$"+v;
+}
+
+function renderLabel(){
+  // 57 x 32 mm at 203 dpi ~= 456 x 256 dots.
+  const c=$("label"), x=c.getContext("2d");
+  x.fillStyle="#fff"; x.fillRect(0,0,c.width,c.height);
+  x.fillStyle="#000"; x.textBaseline="middle";
+
+  // Layout follows Lori's exported Phomymo JSON.
+  x.font="bold 24px Arial";
+  x.textAlign="center";
+  x.fillText("Cattopia",253,85);
+
+  let stone=$("stone").value.trim();
+  x.font="24px Arial";
+  x.textAlign="center";
+  x.fillText(stone,228,119);
+
+  x.font="bold 24px Arial";
+  x.textAlign="left";
+  x.fillText(cleanSize($("size").value),153,155);
+  x.fillText(cleanPrice($("price").value),258,155);
+  return c;
+}
+
+function canvasToRaster(canvas){
+  const ctx=canvas.getContext("2d");
+  const img=ctx.getImageData(0,0,canvas.width,canvas.height).data;
+
+  // M260 raster width is 576 dots (72 bytes). Center 456-dot label in that width.
+  const printerWidth=576, widthBytes=72, height=canvas.height;
+  const left=Math.floor((printerWidth-canvas.width)/2);
+  const data=new Uint8Array(widthBytes*height);
+
+  for(let y=0;y<height;y++){
+    for(let x=0;x<canvas.width;x++){
+      const p=(y*canvas.width+x)*4;
+      const lum=0.299*img[p]+0.587*img[p+1]+0.114*img[p+2];
+      if(lum<128){
+        const px=x+left;
+        const bi=y*widthBytes+(px>>3);
+        data[bi] |= 1 << (7-(px&7));
+      }
+    }
+  }
+  return {data,widthBytes,heightLines:height};
+}
+
+const delay = ms => new Promise(r=>setTimeout(r,ms));
+async function send(bytes){
+  if(!writeChar) throw new Error("Printer is not connected.");
+  bytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if(writeChar.properties.writeWithoutResponse){
+    try { await writeChar.writeValueWithoutResponse(bytes); return; } catch(e){}
+  }
+  await writeChar.writeValue(bytes);
+}
+
+async function printM260(r){
+  // Same M-series raster sequence used by Phomymo for the M260.
+  await send([0x1b,0x40]);                         // init
+  await delay(100);
+  await send([0x1b,0x37,0x07,0x8c,0x02]);       // density 6 / heat time 140
+  await delay(30);
+  await send([0x1d,0x7c,0x06]);                  // density backup
+  await delay(50);
+  await send([0x1d,0x76,0x30,0x00,
+              r.widthBytes,0x00,
+              r.heightLines&255,(r.heightLines>>8)&255]);
+  for(let i=0;i<r.data.length;i+=128){
+    await send(r.data.slice(i,Math.min(i+128,r.data.length)));
+    await delay(20);
+  }
+  await delay(300);
+  await send([0x1b,0x4a,0x20]);                  // feed 32 dots
+  await delay(800);
+}
+
+$("print").onclick = async () => {
+  try{
+    $("print").disabled=true;
+    status("Printing…");
+    const raster=canvasToRaster(renderLabel());
+    await printM260(raster);
+    status("BZZZT! Printed. Fields left exactly as they were.",true);
+  }catch(e){
+    status("Print failed: "+e.message);
+  }finally{
+    $("print").disabled=!writeChar;
+  }
+};
+</script>
+</body>
+</html>
